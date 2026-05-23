@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# htmlz — CLI for a self-hosted HTML page host (https://github.com/vivekkaushal/htmlz).
+# htmlz — CLI for a self-hosted HTML page host (https://github.com/kaushalvivek/htmlz).
 #
 # Sharing model: the URL is the credential. No auth, no ownership. The
 # 10-char random suffix on every published slug is what keeps slugs

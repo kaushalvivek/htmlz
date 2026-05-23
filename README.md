@@ -34,7 +34,7 @@ and ~4k lines of code including docs.
 ## Quickstart
 
 ```bash
-git clone https://github.com/vivekkaushal/htmlz
+git clone https://github.com/kaushalvivek/htmlz
 cd htmlz
 docker compose up -d --build
 ```
