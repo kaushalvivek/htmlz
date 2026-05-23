@@ -116,6 +116,10 @@ local index entry. Comment deletes cascade to replies (root only).
 
 ## Anti-patterns
 
+- **Don't re-publish to update.** Each `publish` creates a new page with a new
+  random suffix. To revise existing content, use `htmlz update <slug> <file>`.
+  The `--slug` flag on `publish` only seeds the prefix of a *new* page; it
+  doesn't bind to an existing one.
 - **Don't try to list pages remotely.** There is no `GET /v1/pages` endpoint —
   enumeration would defeat the URL-as-credential model. The local `list` verb
   only shows what *this user* published.
