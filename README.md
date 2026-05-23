@@ -91,50 +91,6 @@ on the public internet.** Front it with Tailscale, Cloudflare Access,
 a VPN, or a private VPC subnet. See the
 [trust model](infra/README.md#trust-model) for recommended fronts.
 
-## Architecture in eight ideas
-
-The whole repo is ~4,500 lines including docs and tests.
-
-**1 · URL-as-credential with unguessable suffixes.** No user table, no
-ACL, no signup. Slug = `seed-` + 10 random base32 chars. ~50 bits of
-entropy. Sharing = sending the URL. Revoking = republish at a new URL.
-
-**2 · No enumeration endpoint, ever.** There is intentionally no
-`GET /v1/pages`. The manifest and comments live *outside* `DATA_ROOT`,
-so even a path-traversal bug couldn't expose them through the static
-mount.
-
-**3 · Filesystem = database.** FastAPI serves static HTML via
-`StaticFiles`. The manifest is one JSON file; each page's comments are
-one JSON file. Atomic writes via `.tmp` + `os.replace`. No Postgres,
-no Redis, no S3.
-
-**4 · Middleware-injected widget.** A Starlette middleware splices
-`<script src="/_widget/comments.js" defer></script>` before `</body>`
-on every HTML response. Publishers write plain HTML.
-([api/app.py](api/app.py): `CommentWidgetInjector`.)
-
-**5 · Self-contained widget.** One ~1,700-line vanilla-JS IIFE.
-CSS-in-JS. No framework, no bundler, no build step. Defends against
-host page styles (e.g. a global `svg { position: absolute }` reset).
-
-**6 · Path-addressed text edits.** Each editable text node has a
-body-relative path computed via *identical* rules on client
-([api/widget.js](api/widget.js): `editVisibleChildren`) and server
-([api/app.py](api/app.py): `_edit_visible_children`). Edits POST
-`{path, old_text, new_text}`. Server walks the path, verifies
-`old_text`, splices `new_text`, writes atomically. Optimistic
-concurrency for free.
-
-**7 · Newline-faithful editing.** Enter inside a contenteditable span
-sends a real `\n` byte to disk. The server conditionally injects
-`white-space: pre-wrap` on the parent so newlines render on next load.
-
-**8 · CLI distributed by the server.** `curl http://server/install.sh | bash`
-works from any IP/DNS that reaches the server, because `{{BASE}}` in
-the install script is templated at request time from the request's
-own scheme+host.
-
 ## Development
 
 ```bash
