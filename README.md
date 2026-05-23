@@ -145,7 +145,7 @@ docker compose up --build
 bash skill/install.sh
 htmlz publish ./examples/hello.html  # defaults to http://localhost:8000
 
-# Tests
+# Tests — please run these before opening a PR
 PYTHONPATH=. pytest tests/python -q                 # python
 npm install && npx playwright install chromium      # one-time
 npx playwright test                                 # browser
