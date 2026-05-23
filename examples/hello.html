@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hello from htmlz</title>
+<style>
+  :root { --ink: #0a0a0a; --ink-2: #404040; --ink-3: #737373; --border: #e7e5e4; --bg: #fafaf9; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    color: var(--ink); background: var(--bg);
+    margin: 0; line-height: 1.6;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 64px 24px; }
+  h1 { font-size: 30px; letter-spacing: -0.02em; margin: 0 0 16px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-3); margin: 40px 0 8px; }
+  p { color: var(--ink-2); margin: 0 0 12px; }
+  code { font-family: ui-monospace, monospace; font-size: 13px; background: #fff; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  .clock { font-family: ui-monospace, monospace; font-size: 48px; letter-spacing: -0.02em; padding: 24px 0; }
+  .count {
+    display: inline-block; margin-top: 12px;
+    padding: 8px 14px; background: var(--ink); color: white;
+    border: 0; border-radius: 6px; cursor: pointer;
+    font: inherit; font-size: 13px;
+  }
+  .count:hover { background: var(--ink-2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hello from htmlz 👋</h1>
+  <p>If you can see this page, your htmlz server is serving static HTML
+     correctly and the comment widget is injecting at the bottom-right.</p>
+
+  <h2>Live JavaScript still works</h2>
+  <div class="clock" id="clock">--:--:--</div>
+  <button class="count" id="bump">clicks: <span id="n">0</span></button>
+
+  <h2>Try the widget</h2>
+  <p>Click the <strong>Comment</strong> pill at the bottom right, then
+     click any element on this page to anchor a thread. Toggle
+     <strong>Edit</strong> to retype the text in place — changes save to
+     the file on disk on blur.</p>
+
+  <h2>What's next</h2>
+  <p>Publish your own page: <code>htmlz publish ./your-file.html</code></p>
+  <p>Comment from the CLI: <code>htmlz comment SLUG --text "Hello" --body "from the terminal"</code></p>
+  <p>List your pages: <code>htmlz list</code></p>
+
+<script>
+  function tick() {
+    document.getElementById("clock").textContent = new Date().toLocaleTimeString();
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  let n = 0;
+  document.getElementById("bump").addEventListener("click", () => {
+    n += 1;
+    document.getElementById("n").textContent = n;
+  });
+</script>
+</main>
+</body>
+</html>

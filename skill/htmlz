@@ -303,7 +303,7 @@ cmd_track() {
   [ -n "$slug" ] || die "track: SLUG required (full slug, e.g. notes-t6gyf2rfns)"
   printf "%s" "$slug" | grep -qE -- '-[a-z2-9]{10}$' \
     || die "track: '$slug' isn't a full slug (must end with the 10-char random suffix)"
-  local url="$(base_url)/$slug/"
+  local url; url="$(base_url)/$slug/"
   # Verify the page actually exists on the server before tracking.
   api GET "/v1/pages/$slug/comments?include_resolved=true" > /dev/null
   [ -n "$title" ] || title="$slug"
