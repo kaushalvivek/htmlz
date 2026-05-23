@@ -34,4 +34,4 @@ jobs:
       - run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck
-      - run: shellcheck skill/htmlz skill/install.sh skill/install-remote.sh infra/systemd-install.sh
+      - run: shellcheck skill/htmlz skill/install.sh skill/install-remote.sh infra/systemd-install.sh infra/aws-user-data.sh

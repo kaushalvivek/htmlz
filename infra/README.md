@@ -1,8 +1,12 @@
 # infra/
 
-How to deploy htmlz. Two paths — pick whichever you prefer.
+How to deploy htmlz. Three paths — pick whichever fits.
 
-## Path A: Docker (recommended)
+- **AWS EC2** — see [`aws.md`](aws.md). One `t4g.nano`, SSM for shell, Security Group locked to your IP (or zero ingress + Tailscale). ~$3.50/month.
+- **Docker on any host** — what you'd do locally; covered below.
+- **Bare systemd on a Linux box** — for VPSes without Docker; covered below.
+
+## Path A: Docker (recommended for local + most VPSes)
 
 From the repo root:
 
