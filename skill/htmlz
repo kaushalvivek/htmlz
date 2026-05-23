@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+# htmlz — CLI for a self-hosted HTML page host (https://github.com/vivekkaushal/htmlz).
+#
+# Sharing model: the URL is the credential. No auth, no ownership. The
+# 10-char random suffix on every published slug is what keeps slugs
+# unguessable. This script caches your locally-published slugs so you can
+# refer to them by prefix.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+DEFAULT_BASE="http://localhost:8000"
+CONFIG_DIR="${HTMLZ_CONFIG_DIR:-$HOME/.config/htmlz}"
+IDENTITY_FILE="$CONFIG_DIR/identity.json"
+PAGES_FILE="$CONFIG_DIR/pages.json"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+# ── deps ─────────────────────────────────────────────────────────────
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    case "$1" in
+      jq)   printf "htmlz: missing 'jq'. Install: brew install jq (mac) | dnf install jq (AL2023)\n" >&2 ;;
+      curl) printf "htmlz: missing 'curl'.\n" >&2 ;;
+      *)    printf "htmlz: missing '%s'.\n" "$1" >&2 ;;
+    esac
+    exit 1
+  }
+}
+need curl
+need jq
+mkdir -p "$CONFIG_DIR"
+
+# ── helpers ──────────────────────────────────────────────────────────
+die() { printf "htmlz: %s\n" "$*" >&2; exit 1; }
+
+base_url() {
+  if [ -n "${HTMLZ_BASE:-}" ]; then
+    printf "%s" "${HTMLZ_BASE%/}"; return
+  fi
+  if [ -f "$CONFIG_FILE" ]; then
+    local b; b=$(jq -r '.base // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    if [ -n "$b" ]; then printf "%s" "${b%/}"; return; fi
+  fi
+  printf "%s" "${DEFAULT_BASE%/}"
+}
+
+ensure_identity() {
+  local name=""
+  if [ -f "$IDENTITY_FILE" ]; then
+    name=$(jq -r '.name // empty' "$IDENTITY_FILE" 2>/dev/null || true)
+  fi
+  if [ -z "$name" ]; then
+    if [ ! -t 0 ] && [ ! -r /dev/tty ]; then
+      die "no identity set and no TTY to ask. Run: htmlz identity <name>"
+    fi
+    printf "htmlz: who's posting?  (saved to %s)\n" "$IDENTITY_FILE" >&2
+    printf "name> " >&2
+    read -r name </dev/tty
+    [ -n "$name" ] || die "no name provided"
+    printf '{"name":%s}\n' "$(printf '%s' "$name" | jq -Rs .)" > "$IDENTITY_FILE"
+    printf "saved. change later with: htmlz identity <name>\n" >&2
+  fi
+  printf "%s" "$name"
+}
+
+# Local index: tracks pages YOU've published. Enables prefix-based slug
+# resolution (e.g. `info notes` → notes-t6gyf2rfns) without exposing
+# a server-side enumeration endpoint.
+index_add() {
+  local slug="$1" title="$2" url="$3"
+  local now; now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  [ -f "$PAGES_FILE" ] || printf '{"pages":[]}\n' > "$PAGES_FILE"
+  local tmp; tmp=$(mktemp)
+  jq --arg slug "$slug" --arg title "$title" --arg url "$url" --arg ts "$now" '
+    .pages |= ([.[] | select(.slug != $slug)] + [{slug: $slug, title: $title, url: $url, published_at: $ts}])
+  ' "$PAGES_FILE" > "$tmp" && mv "$tmp" "$PAGES_FILE"
+}
+
+# Resolve a slug or prefix to a full slug. Full slugs (ending in -XXXXXXXXXX)
+# pass through. Prefixes look up the local index.
+resolve_slug() {
+  local input="$1"
+  if printf "%s" "$input" | grep -qE -- '-[a-z2-9]{10}$'; then
+    printf "%s" "$input"; return
+  fi
+  if [ ! -f "$PAGES_FILE" ]; then
+    die "'$input' isn't a full slug and no local index exists. Pass the full slug or publish a page first."
+  fi
+  local matches count
+  matches=$(jq -r --arg p "$input" '.pages[] | select(.slug == $p or (.slug | startswith($p + "-"))) | .slug' "$PAGES_FILE")
+  count=$(printf "%s\n" "$matches" | grep -c . || true)
+  if [ "$count" = "0" ]; then
+    die "no local page matches '$input'. Try: htmlz list"
+  elif [ "$count" -gt 1 ]; then
+    {
+      printf "htmlz: '%s' is ambiguous; matches:\n" "$input"
+      printf "%s\n" "$matches" | sed 's/^/  /'
+    } >&2
+    exit 1
+  fi
+  printf "%s" "$matches"
+}
+
+# Make an API call. Streams body on stdout on 2xx, dies with a translated
+# message otherwise. Use: api METHOD PATH [curl-args...]
+api() {
+  local method="$1" path="$2"
+  shift 2
+  local tmp status
+  tmp=$(mktemp)
+  status=$(curl -sS -w "%{http_code}" -o "$tmp" -X "$method" "$@" "$(base_url)$path") || {
+    rm -f "$tmp"; die "network error reaching $(base_url)"
+  }
+  local body; body=$(cat "$tmp"); rm -f "$tmp"
+  if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+    printf "%s" "$body"; return 0
+  fi
+  local detail; detail=$(printf "%s" "$body" | jq -r '.detail // empty' 2>/dev/null || true)
+  detail="${detail:-$body}"
+  case "$status" in
+    400) die "bad request: $detail" ;;
+    404) die "not found: $detail" ;;
+    409) die "conflict: $detail" ;;
+    413) die "payload too large: $detail" ;;
+    503) die "service unavailable: $detail" ;;
+    *)   die "HTTP $status: $detail" ;;
+  esac
+}
+
+copy_to_clipboard() {
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf "%s" "$1" | pbcopy && printf "  (copied to clipboard)\n"
+  elif command -v xclip >/dev/null 2>&1; then
+    printf "%s" "$1" | xclip -selection clipboard && printf "  (copied to clipboard)\n"
+  fi
+}
+
+# Open $EDITOR on a temp file, return the entered body (lines starting with
+# '#' stripped, trailing blanks trimmed). Errors if empty.
+edit_body() {
+  local tmpfile; tmpfile=$(mktemp)
+  {
+    printf "\n"
+    printf "# Enter your comment above this line.\n"
+    printf "# Lines starting with '#' will be ignored.\n"
+  } > "$tmpfile"
+  "${EDITOR:-vi}" "$tmpfile" </dev/tty >/dev/tty
+  local body
+  body=$(sed '/^#/d' "$tmpfile" | awk '
+    {lines[++n]=$0}
+    END {
+      while (n && lines[n] ~ /^[[:space:]]*$/) n--
+      for (i=1; i<=n; i++) print lines[i]
+    }')
+  rm -f "$tmpfile"
+  [ -n "$body" ] || die "empty body — aborted"
+  printf "%s" "$body"
+}
+
+slugify() {
+  printf "%s" "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr ' _' '--' \
+    | sed -e 's/[^a-z0-9-]//g' -e 's/--*/-/g' -e 's/^-*//' -e 's/-*$//' \
+    | head -c 50
+}
+
+extract_title() {
+  grep -oE '<title[^>]*>[^<]*</title>' "$1" 2>/dev/null | head -1 \
+    | sed -e 's|<title[^>]*>||' -e 's|</title>||'
+}
+
+# ── verbs: pages ─────────────────────────────────────────────────────
+cmd_publish() {
+  local file="" slug="" title="" description="" tags="" want_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --slug) slug="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --description) description="$2"; shift 2 ;;
+      --tags) tags="$2"; shift 2 ;;
+      --json) want_json=1; shift ;;
+      --help|-h) printf "%s\n" "$PUBLISH_HELP"; return ;;
+      --*) die "publish: unknown flag $1" ;;
+      *)  if [ -z "$file" ]; then file="$1"; else die "publish: extra arg: $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$file" ] || die "publish: FILE required. See: htmlz publish --help"
+  [ -f "$file" ] || die "no such file: $file"
+
+  if [ -z "$slug" ]; then
+    slug=$(slugify "$(basename "$file" | sed 's/\.[^.]*$//')")
+    [ -n "$slug" ] || slug="page"
+    case "$slug" in [a-z]*) ;; *) slug="p-$slug" ;; esac
+  fi
+  if [ -z "$title" ]; then
+    title=$(extract_title "$file")
+    [ -n "$title" ] || title=$(basename "$file" | sed 's/\.[^.]*$//')
+  fi
+
+  local resp; resp=$(api POST /v1/pages \
+    -F "slug=$slug" -F "title=$title" \
+    -F "description=$description" -F "tags=$tags" \
+    -F "file=@$file;type=text/html")
+
+  local full_slug url
+  full_slug=$(printf "%s" "$resp" | jq -r '.slug')
+  url="$(base_url)$(printf "%s" "$resp" | jq -r '.url')"
+  index_add "$full_slug" "$title" "$url"
+
+  if [ "$want_json" = "1" ]; then
+    printf "%s\n" "$resp"
+  else
+    printf "✓ published\n  %s\n" "$url"
+    copy_to_clipboard "$url"
+  fi
+}
+
+cmd_update() {
+  local input="" file="" title="" description="" tags="" want_json=0 has_field=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) title="$2"; has_field=1; shift 2 ;;
+      --description) description="$2"; has_field=1; shift 2 ;;
+      --tags) tags="$2"; has_field=1; shift 2 ;;
+      --json) want_json=1; shift ;;
+      --help|-h) printf "%s\n" "$UPDATE_HELP"; return ;;
+      --*) die "update: unknown flag $1" ;;
+      *)
+        if   [ -z "$input" ]; then input="$1"
+        elif [ -z "$file" ];  then file="$1"
+        else die "update: extra arg: $1"
+        fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] || die "update: SLUG required"
+  local slug; slug=$(resolve_slug "$input")
+
+  local curl_args=()
+  if [ -n "$file" ]; then
+    [ -f "$file" ] || die "no such file: $file"
+    curl_args+=(-F "file=@$file;type=text/html"); has_field=1
+  fi
+  [ -n "$title" ]       && curl_args+=(-F "title=$title")
+  [ -n "$description" ] && curl_args+=(-F "description=$description")
+  [ -n "$tags" ]        && curl_args+=(-F "tags=$tags")
+  [ "$has_field" = "1" ] || die "update: pass a FILE or one of --title/--description/--tags"
+
+  local resp; resp=$(api PUT "/v1/pages/$slug" "${curl_args[@]}")
+  local url new_title
+  url="$(base_url)$(printf "%s" "$resp" | jq -r '.url')"
+  new_title=$(printf "%s" "$resp" | jq -r '.meta.title // empty')
+  index_add "$slug" "${title:-$new_title}" "$url"
+
+  if [ "$want_json" = "1" ]; then
+    printf "%s\n" "$resp"
+  else
+    printf "✓ updated\n  %s\n" "$url"
+  fi
+}
+
+cmd_info() {
+  [ $# -ge 1 ] || die "info: SLUG required"
+  local slug; slug=$(resolve_slug "$1")
+  if [ -f "$PAGES_FILE" ]; then
+    local row; row=$(jq -c --arg s "$slug" '.pages[] | select(.slug == $s)' "$PAGES_FILE")
+    if [ -n "$row" ]; then printf "%s\n" "$row" | jq .; return; fi
+  fi
+  jq -n --arg slug "$slug" --arg url "$(base_url)/$slug/" '{slug: $slug, url: $url}'
+}
+
+cmd_open() {
+  [ $# -ge 1 ] || die "open: SLUG required"
+  local slug; slug=$(resolve_slug "$1")
+  local url; url="$(base_url)/$slug/"
+  if   command -v open >/dev/null 2>&1; then open "$url"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url"
+  else printf "%s\n" "$url"
+  fi
+}
+
+cmd_list() {
+  if [ ! -f "$PAGES_FILE" ] || [ "$(jq -r '.pages | length' "$PAGES_FILE" 2>/dev/null || echo 0)" = "0" ]; then
+    printf "(no pages indexed yet)\n"; return
+  fi
+  jq -r '.pages | sort_by(.published_at) | reverse | .[] | [.slug, .title] | @tsv' "$PAGES_FILE" \
+    | awk -F'\t' '{ printf "%-44s  %s\n", $1, $2 }'
+}
+
+# Add a known full slug to the local index without re-publishing. Useful on
+# a machine that didn't publish the page originally — point this user's index
+# at the canonical slug so prefix resolution works.
+cmd_track() {
+  local slug="" title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) title="$2"; shift 2 ;;
+      --help|-h) printf "%s\n" "$TRACK_HELP"; return ;;
+      --*) die "track: unknown flag $1" ;;
+      *)  if [ -z "$slug" ]; then slug="$1"; else die "extra arg: $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || die "track: SLUG required (full slug, e.g. notes-t6gyf2rfns)"
+  printf "%s" "$slug" | grep -qE -- '-[a-z2-9]{10}$' \
+    || die "track: '$slug' isn't a full slug (must end with the 10-char random suffix)"
+  local url="$(base_url)/$slug/"
+  # Verify the page actually exists on the server before tracking.
+  api GET "/v1/pages/$slug/comments?include_resolved=true" > /dev/null
+  [ -n "$title" ] || title="$slug"
+  index_add "$slug" "$title" "$url"
+  printf "✓ tracked %s\n  %s\n" "$slug" "$url"
+}
+
+cmd_delete() {
+  local input="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      --help|-h) printf "%s\n" "$DELETE_PAGE_HELP"; return ;;
+      *) if [ -z "$input" ]; then input="$1"; else die "delete: extra arg: $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] || die "delete: SLUG required"
+  local slug; slug=$(resolve_slug "$input")
+  if [ "$yes" != "1" ]; then
+    local title="" comment_count=""
+    if [ -f "$PAGES_FILE" ]; then
+      title=$(jq -r --arg s "$slug" '.pages[] | select(.slug == $s) | .title // empty' "$PAGES_FILE")
+    fi
+    comment_count=$(api GET "/v1/pages/$slug/comments?include_resolved=true" | jq -r 'length')
+    printf "About to delete (IRREVERSIBLE):\n" >&2
+    printf "  slug:     %s\n" "$slug" >&2
+    [ -n "$title" ] && printf "  title:    %s\n" "$title" >&2
+    printf "  url:      %s/%s/\n" "$(base_url)" "$slug" >&2
+    printf "  comments: %s (will be deleted too)\n" "$comment_count" >&2
+    printf "Proceed? [y/N] " >&2
+    local ans; read -r ans </dev/tty
+    case "$ans" in y|Y|yes|YES) ;; *) printf "aborted\n" >&2; exit 1 ;; esac
+  fi
+  api DELETE "/v1/pages/$slug" > /dev/null
+  if [ -f "$PAGES_FILE" ]; then
+    local tmp; tmp=$(mktemp)
+    jq --arg s "$slug" '.pages |= map(select(.slug != $s))' "$PAGES_FILE" > "$tmp" && mv "$tmp" "$PAGES_FILE"
+  fi
+  printf "✓ deleted %s\n" "$slug"
+}
+
+cmd_untrack() {
+  local slug=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help|-h) printf "untrack SLUG\n  Remove a slug from the local index (no server change).\n"; return ;;
+      *) if [ -z "$slug" ]; then slug="$1"; else die "extra arg: $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || die "untrack: SLUG required"
+  local resolved; resolved=$(resolve_slug "$slug")
+  [ -f "$PAGES_FILE" ] || die "no local index"
+  local tmp; tmp=$(mktemp)
+  jq --arg s "$resolved" '.pages |= map(select(.slug != $s))' "$PAGES_FILE" > "$tmp" && mv "$tmp" "$PAGES_FILE"
+  printf "✓ untracked %s (server unchanged)\n" "$resolved"
+}
+
+# ── verbs: comments ──────────────────────────────────────────────────
+cmd_comment() {
+  local input="" text="" selector="" body="" want_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --text) text="$2"; shift 2 ;;
+      --selector) selector="$2"; shift 2 ;;
+      --body) body="$2"; shift 2 ;;
+      --json) want_json=1; shift ;;
+      --help|-h) printf "%s\n" "$COMMENT_HELP"; return ;;
+      --*) die "comment: unknown flag $1" ;;
+      *)  if [ -z "$input" ]; then input="$1"; else die "extra arg: $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] || die "comment: SLUG required"
+  [ -n "$text$selector" ] || die "comment: pass --text \"...\" or --selector \"...\""
+  local slug; slug=$(resolve_slug "$input")
+  if [ -z "$body" ] || [ "$body" = "-" ]; then body=$(edit_body); fi
+  local name; name=$(ensure_identity)
+
+  local preview="${text:-$selector}"
+  preview=$(printf "%s" "$preview" | head -c 120)
+
+  local payload
+  payload=$(jq -n \
+    --arg name "$name" --arg body "$body" \
+    --arg text "$text" --arg sel "$selector" --arg prev "$preview" '
+    {
+      user_name: $name,
+      body: $body,
+      anchor: (
+        {preview: $prev}
+        | if $sel != "" then .selector = $sel else . end
+        | if $text != "" then .text = $text else . end
+      )
+    }')
+
+  local resp; resp=$(api POST "/v1/pages/$slug/comments" \
+    -H "Content-Type: application/json" --data-raw "$payload")
+  if [ "$want_json" = "1" ]; then
+    printf "%s\n" "$resp"
+  else
+    local cid; cid=$(printf "%s" "$resp" | jq -r '.id')
+    printf "✓ commented (%s)\n  %s/%s/\n" "$cid" "$(base_url)" "$slug"
+  fi
+}
+
+cmd_reply() {
+  local input="" cid="" body="" want_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --body) body="$2"; shift 2 ;;
+      --json) want_json=1; shift ;;
+      --help|-h) printf "%s\n" "$REPLY_HELP"; return ;;
+      --*) die "reply: unknown flag $1" ;;
+      *)
+        if   [ -z "$input" ]; then input="$1"
+        elif [ -z "$cid" ];   then cid="$1"
+        else die "extra arg: $1"
+        fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] && [ -n "$cid" ] || die "reply: usage — reply SLUG COMMENT_ID --body \"…\""
+  local slug; slug=$(resolve_slug "$input")
+  if [ -z "$body" ] || [ "$body" = "-" ]; then body=$(edit_body); fi
+  local name; name=$(ensure_identity)
+
+  local payload
+  payload=$(jq -n --arg name "$name" --arg body "$body" --arg pid "$cid" \
+    '{user_name: $name, body: $body, parent_id: $pid}')
+
+  local resp; resp=$(api POST "/v1/pages/$slug/comments" \
+    -H "Content-Type: application/json" --data-raw "$payload")
+  if [ "$want_json" = "1" ]; then
+    printf "%s\n" "$resp"
+  else
+    printf "✓ replied (%s)\n" "$(printf "%s" "$resp" | jq -r '.id')"
+  fi
+}
+
+cmd_comments() {
+  [ $# -ge 1 ] || die "comments: SLUG required"
+  local slug; slug=$(resolve_slug "$1"); shift
+  local include_resolved=false want_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --resolved|--all) include_resolved=true; shift ;;
+      --json) want_json=1; shift ;;
+      --help|-h) printf "comments SLUG [--resolved] [--json]\n"; return ;;
+      *) die "comments: unknown flag $1" ;;
+    esac
+  done
+  local resp; resp=$(api GET "/v1/pages/$slug/comments?include_resolved=$include_resolved")
+  if [ "$want_json" = "1" ]; then
+    printf "%s\n" "$resp"; return
+  fi
+  if [ "$(printf "%s" "$resp" | jq -r '.comments | length')" = "0" ]; then
+    printf "(no comments)\n"; return
+  fi
+  printf "%s" "$resp" | jq -r '.comments[] |
+    if .parent_id == null then
+      "○ \(.id)  \(.user_name) · \(.created_at[0:16])\(if .resolved then "  [resolved]" else "" end)\n  \(.body | gsub("\n"; " "))\n  └ anchor: \(.anchor.preview // .anchor.text // .anchor.selector // "?")\n"
+    else
+      "  ↳ \(.id)  \(.user_name) · \(.created_at[0:16])\n    \(.body | gsub("\n"; " "))\n"
+    end'
+}
+
+cmd_resolve() {
+  local input="" cid="" off=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --off) off=1; shift ;;
+      --help|-h) printf "%s\n" "$RESOLVE_HELP"; return ;;
+      --*) die "resolve: unknown flag $1" ;;
+      *)
+        if   [ -z "$input" ]; then input="$1"
+        elif [ -z "$cid" ];   then cid="$1"
+        else die "extra arg: $1"
+        fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] && [ -n "$cid" ] || die "resolve: usage — resolve SLUG COMMENT_ID [--off]"
+  local slug; slug=$(resolve_slug "$input")
+  local resolved=true; [ "$off" = "1" ] && resolved=false
+  api PATCH "/v1/pages/$slug/comments/$cid" \
+    -H "Content-Type: application/json" \
+    --data-raw "{\"resolved\": $resolved}" > /dev/null
+  printf "✓ %s\n" "$([ "$off" = "1" ] && echo "reopened" || echo "resolved")"
+}
+
+cmd_delete_comment() {
+  local input="" cid="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      --help|-h) printf "%s\n" "$DELETE_HELP"; return ;;
+      *)
+        if   [ -z "$input" ]; then input="$1"
+        elif [ -z "$cid" ];   then cid="$1"
+        else die "extra arg: $1"
+        fi; shift ;;
+    esac
+  done
+  [ -n "$input" ] && [ -n "$cid" ] || die "delete-comment: usage — delete-comment SLUG COMMENT_ID [--yes]"
+  local slug; slug=$(resolve_slug "$input")
+  if [ "$yes" != "1" ]; then
+    printf "Delete %s on %s? Root deletions cascade to all replies. [y/N] " "$cid" "$slug" >&2
+    local ans; read -r ans </dev/tty
+    case "$ans" in y|Y|yes|YES) ;; *) printf "aborted\n" >&2; exit 1 ;; esac
+  fi
+  api DELETE "/v1/pages/$slug/comments/$cid" > /dev/null
+  printf "✓ deleted\n"
+}
+
+# ── verbs: self ──────────────────────────────────────────────────────
+cmd_identity() {
+  if [ $# -eq 0 ]; then
+    if [ -f "$IDENTITY_FILE" ]; then
+      jq -r '.name // "(empty)"' "$IDENTITY_FILE"
+    else
+      printf "(no identity set)\n"
+    fi
+    return
+  fi
+  local name="$1"
+  printf '{"name":%s}\n' "$(printf '%s' "$name" | jq -Rs .)" > "$IDENTITY_FILE"
+  printf "✓ identity set to '%s'\n" "$name"
+}
+
+# ── help ─────────────────────────────────────────────────────────────
+PUBLISH_HELP="publish FILE [--slug SEED] [--title T] [--description D] [--tags A,B] [--json]
+  Defaults: --slug from filename, --title from <title> tag or filename."
+
+UPDATE_HELP="update SLUG [FILE] [--title T] [--description D] [--tags A,B] [--json]
+  Pass either a FILE, or one or more of --title/--description/--tags."
+
+COMMENT_HELP="comment SLUG (--text TEXT | --selector SEL) [--body B] [--json]
+  --text anchors by a >=4-char text fragment on the page.
+  --selector anchors by CSS selector.
+  --body omitted or '-' opens \$EDITOR."
+
+REPLY_HELP="reply SLUG COMMENT_ID [--body B] [--json]
+  --body omitted or '-' opens \$EDITOR."
+
+RESOLVE_HELP="resolve SLUG COMMENT_ID [--off]
+  --off reopens an already-resolved thread."
+
+DELETE_HELP="delete-comment SLUG COMMENT_ID [--yes]
+  Deleting a root comment cascades to its replies."
+
+DELETE_PAGE_HELP="delete SLUG [--yes]
+  DESTRUCTIVE and irreversible. Removes the HTML, all comments, and the local
+  index entry. Without --yes you get a [y/N] prompt showing what's about to be
+  deleted. Agents: always confirm with the user before passing --yes."
+
+TRACK_HELP="track SLUG [--title T]
+  Add an existing full slug to your local index without re-publishing. Useful
+  on a fresh machine — once tracked, you can refer to the page by prefix."
+
+print_help() {
+  cat <<EOF
+htmlz $VERSION — CLI for a self-hosted HTML page host
+
+USAGE
+  htmlz <verb> [args]
+
+PAGES
+  publish FILE                       publish a new HTML file
+  update SLUG [FILE]                 update content and/or metadata
+  info SLUG                          show metadata + URL
+  open SLUG                          open in browser
+  list                               list pages you've published (local)
+  track SLUG [--title T]             add an existing slug to your local index
+  untrack SLUG                       remove a slug from your local index
+  delete SLUG [--yes]                DESTRUCTIVE: remove page + comments (irreversible)
+
+COMMENTS
+  comment SLUG --text X --body B     add a thread anchored to text
+  comment SLUG --selector S --body B   ...or to a CSS selector
+  reply SLUG CID --body B            reply to a comment
+  comments SLUG [--resolved]         list comments on a page
+  resolve SLUG CID [--off]           resolve/reopen a thread
+  delete-comment SLUG CID            delete a comment (cascades on root)
+
+SELF
+  identity [NAME]                    show or set your stored name
+  --help                             this message
+  --version                          print version
+
+SLUG accepts a unique prefix from your local index (e.g. 'notes' resolves
+to 'notes-t6gyf2rfns'). Full slugs always work too.
+
+Storage: $CONFIG_DIR
+Server : $(base_url)
+EOF
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────
+verb="${1:-help}"; shift || true
+case "$verb" in
+  publish)        cmd_publish "$@" ;;
+  update)         cmd_update "$@" ;;
+  info)           cmd_info "$@" ;;
+  open)           cmd_open "$@" ;;
+  list)           cmd_list "$@" ;;
+  track)          cmd_track "$@" ;;
+  untrack)        cmd_untrack "$@" ;;
+  delete)         cmd_delete "$@" ;;
+  comment)        cmd_comment "$@" ;;
+  reply)          cmd_reply "$@" ;;
+  comments)       cmd_comments "$@" ;;
+  resolve)        cmd_resolve "$@" ;;
+  delete-comment) cmd_delete_comment "$@" ;;
+  identity)       cmd_identity "$@" ;;
+  help|--help|-h) print_help ;;
+  --version|version) printf "htmlz %s\n" "$VERSION" ;;
+  *) printf "unknown verb: %s\n" "$verb" >&2; print_help >&2; exit 2 ;;
+esac

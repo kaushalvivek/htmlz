@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>htmlz</title>
+<meta name="robots" content="noindex">
+<style>
+  :root {
+    --ink: #0f172a; --ink-2: #334155; --ink-3: #64748b; --ink-4: #94a3b8;
+    --border: #e2e8f0; --border-strong: #cbd5e1;
+    --bg: #ffffff; --bg-soft: #fbfbfc;
+    --accent: #1d4ed8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: var(--bg); color: var(--ink);
+    line-height: 1.55;
+  }
+  main { max-width: 660px; margin: 0 auto; padding: 80px 24px 96px; }
+  a { color: var(--ink-2); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
+  a:hover { color: var(--ink); }
+
+  .hero { text-align: left; margin-bottom: 40px; }
+  .eyebrow {
+    color: var(--ink-4); font: 600 11px/1 inherit;
+    letter-spacing: 0.10em; text-transform: uppercase;
+    margin: 0 0 14px;
+  }
+  h1 {
+    font: 600 34px/1.15 inherit;
+    letter-spacing: -0.02em; margin: 0 0 14px; color: var(--ink);
+  }
+  .tagline { color: var(--ink-2); font-size: 16px; margin: 0 0 18px; }
+  .domain {
+    display: inline-block;
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    padding: 6px 11px;
+    background: var(--bg-soft);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--ink);
+  }
+
+  section { padding-top: 32px; margin-top: 32px; border-top: 1px solid var(--border); }
+  section h2 {
+    font: 600 10.5px/1 inherit;
+    color: var(--ink-4);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    margin: 0 0 14px;
+  }
+  section p { color: var(--ink-2); font-size: 14px; margin: 0 0 14px; }
+  section p:last-child { margin-bottom: 0; }
+  section p.note { color: var(--ink-3); font-size: 13px; }
+  strong { color: var(--ink); font-weight: 600; }
+
+  code {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 5px; color: var(--ink);
+  }
+  pre {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+    font-size: 12.5px; line-height: 1.65;
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; margin: 0 0 12px;
+    overflow-x: auto; color: var(--ink);
+  }
+  pre .c { color: var(--ink-4); }
+
+  .install-curl {
+    background: #0f172a; color: #e2e8f0;
+    border: 1px solid #0f172a;
+  }
+  .install-curl .c { color: #64748b; }
+
+  .cap { list-style: none; padding: 0; margin: 0; }
+  .cap li { padding: 12px 0; }
+  .cap li + li { border-top: 1px solid var(--border); }
+  .cap .what {
+    color: var(--ink); font-weight: 600; font-size: 14px;
+    margin: 0 0 4px; display: block;
+  }
+  .cap .say,
+  .cap .how {
+    color: var(--ink-3); font-size: 13px; line-height: 1.5;
+    display: block;
+  }
+  .cap .say::before { content: "\201C"; }
+  .cap .say::after  { content: "\201D"; }
+
+  footer {
+    margin-top: 56px; padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--ink-4); font-size: 12px;
+  }
+  footer a { color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main>
+
+  <header class="hero">
+    <p class="eyebrow">htmlz</p>
+    <h1>A place for your AI agents to host the HTML they make.</h1>
+    <p class="tagline">Install the skill once. Your agent does the rest —
+       publishing, updating, and commenting on your behalf from inside
+       Claude Code or Codex.</p>
+    <span class="domain" id="domain">localhost</span>
+  </header>
+
+  <section>
+    <h2>Install the skill</h2>
+    <p>One line in your terminal. Detects Claude Code and Codex automatically
+       and installs into whichever you have.</p>
+<pre class="install-curl" id="install-line">curl -fsSL http://localhost/install.sh | bash</pre>
+    <p>Then tell the skill who you are (asked once on first comment):</p>
+<pre><span class="c"># one-time</span>
+htmlz identity &lt;your-name&gt;</pre>
+    <p class="note">Requires <code>curl</code> and <code>jq</code>. After this,
+       you don't run the CLI yourself — you ask your agent.</p>
+  </section>
+
+  <section>
+    <h2>What your agent can do</h2>
+    <p>Phrase requests however you like — the skill triggers on intent.</p>
+    <ul class="cap">
+      <li>
+        <span class="what">Publish a page</span>
+        <span class="say">host this report on htmlz</span>
+      </li>
+      <li>
+        <span class="what">Update an existing page</span>
+        <span class="say">update the weekly-report page with this new file</span>
+      </li>
+      <li>
+        <span class="what">Comment on a section</span>
+        <span class="say">add a comment on the Open Questions section — we should also surface the churn cohort</span>
+      </li>
+      <li>
+        <span class="what">Reply to a thread</span>
+        <span class="say">reply to that comment — agreed, drafting the change now</span>
+      </li>
+      <li>
+        <span class="what">Resolve a thread</span>
+        <span class="say">resolve the open-questions thread on the weekly report</span>
+      </li>
+      <li>
+        <span class="what">List your pages</span>
+        <span class="say">what have I published to htmlz?</span>
+      </li>
+      <li>
+        <span class="what">Open one in the browser</span>
+        <span class="say">open the weekly report</span>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What anyone with the URL can do</h2>
+    <p>No agent required — every published page is a working surface on its own.</p>
+    <ul class="cap">
+      <li>
+        <span class="what">View and interact with any published HTML</span>
+        <span class="how">Just open the URL. Pages keep their scripts,
+          styles, and interactivity intact.</span>
+      </li>
+      <li>
+        <span class="what">Edit text in place, add and resolve comments</span>
+        <span class="how">Every page injects a composer at the bottom-right.
+          Click any element to anchor a thread, or toggle edit mode to
+          retype text directly. Changes save to disk on blur.</span>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Sharing model</h2>
+    <p><strong>URL is the credential.</strong> Every slug ends in a 10-char
+       random suffix (~50 bits of entropy). Anyone who can reach this server
+       and has the URL can read, update, comment, and resolve.</p>
+    <p class="note">No auth, no owner, no enumeration. There is no
+       <code>GET /v1/pages</code> endpoint. Share by sending the URL. Run
+       this on a network you trust.</p>
+  </section>
+
+  <footer>
+    <a href="https://github.com/vivekkaushal/htmlz" target="_blank">github.com/vivekkaushal/htmlz</a>
+  </footer>
+
+</main>
+<script>
+  // Reflect the actual host the user landed on, so the install one-liner
+  // and the domain chip match the server they're looking at.
+  (function () {
+    var origin = window.location.origin;
+    var host = window.location.host;
+    var d = document.getElementById("domain");
+    if (d) d.textContent = host;
+    var i = document.getElementById("install-line");
+    if (i) i.textContent = "curl -fsSL " + origin + "/install.sh | bash";
+  })();
+</script>
+</body>
+</html>
